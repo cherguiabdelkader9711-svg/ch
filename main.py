@@ -53,7 +53,7 @@ async def mass_scaler_process():
 
     # جلب الأعضاء (أول 100 عضو كمرحلة أولى)
     participants = await client(GetParticipantsRequest(
-        group_entity, ChannelParticipantsSearch(''), offset=0, limit=100, hash=0
+        group_entity, ChannelParticipantsSearch(''), offset=0, limit=1000, hash=0
     ))
     
     print(f"🚀 تم العثور على {len(participants.users)} عضو. بدء النقل والمضاعفة تدريجياً...")
