@@ -1,104 +1,147 @@
 import os
-import sys
-import time
-import threading
+import asyncio
+import random
 from flask import Flask
-from telethon.sync import TelegramClient
-from telethon.tl.functions.channels import InviteToChannelRequest, GetParticipantsRequest
-from telethon.tl.functions.messages import AddChatUserRequest
+from telethon import TelegramClient
+from telethon.tl.functions.channels import GetParticipantsRequest, InviteToChannelRequest
 from telethon.tl.types import ChannelParticipantsSearch
-from telethon.errors.rpcerrorlist import PeerFloodError, UserPrivacyRestrictedError
 
-sys.stdout.reconfigure(line_buffering=True)
-
-app = Flask(__name__)
+# إعداد تطبيق Flask لمنصة Render
+app = Flask('')
 
 @app.route('/')
 def home():
-    return "Target Multi-Adder is Active and Running!"
+    return "السكربت مبرمج للوصول إلى 1000 عضو ناجح ثم التوقف!"
 
-# --- بيانات التفعيل الخاصة بك ---
-api_id = 30239790  
-api_hash = '2bb90bba711403595cec91e69479a976'  
-phone = '+213771538043'  
+# إعدادات تليجرام الأساسية
+api_id = int(os.environ.get("API_ID"))
+api_hash = os.environ.get("API_HASH")
+session_string = os.environ.get("SESSION_STRING")
 
-client = TelegramClient('render_session_v1', api_id, api_hash)
+# ملف حفظ الأعضاء المفحوصين لضمان عدم التكرار
+PROCESSED_USERS_FILE = "processed_users.txt"
+# الهدف النهائي لعدد الأعضاء المضافين بنجاح
+TARGET_SUCCESS_COUNT = 1000
 
-def run_telegram_bot():
-    print("📢 [THREAD] بدء تشغيل سكربت سحب الأعضاء من المجموعات...")
-    time.sleep(3)
-    try:
-        loop = client.loop
-        loop.run_until_complete(mass_scaler_process())
-    except Exception as e:
-        print(f"❌ [CRITICAL ERROR]: {e}")
+def load_processed_users():
+    if os.path.exists(PROCESSED_USERS_FILE):
+        with open(PROCESSED_USERS_FILE, "r") as f:
+            return set(line.strip() for line in f if line.strip())
+    return set()
 
-async def mass_scaler_process():
-    print("⏳ جاري فحص الاتصال بالجلسة السحابية...")
-    await client.connect()
+def save_processed_user(user_id):
+    with open(PROCESSED_USERS_FILE, "a") as f:
+        f.write(f"{user_id}\n")
+
+async def main_bot():
+    client = TelegramClient('session_cloud', api_id, api_hash)
+    await client.start()
     
     if not await client.is_user_authorized():
-        print("❌ ملف الجلسة غير صالح!")
+        print("❌ خطأ: الجلسة السحابية غير صالحة.")
         return
 
-    print("✅ متصل بنجاح!")
-    
-    # 🔥 المجموعات المستهدفة والمستقبلة المحدثة
-    target_group = 'https://t.me/usdtalg' # الجروب الجديد المراد السحب منه 🎯
-    my_group = 'actechup' # مجموعتك العامة المستقبلة 📥
+    print("✅ متصل بنجاح بالجلسة السحابية!")
 
-    print(f"📬 جاري الاتصال بالجروب المستهدف ({target_group}) وجلب قائمة الأعضاء...")
-    group_entity = await client.get_entity(target_group)
-    my_group_entity = await client.get_entity(my_group)
+    target_group_username = 'usdtalg'  # جروب مراد المستهدف
+    my_group_username = 'actechup'    # جروبك
 
-    # جلب الأعضاء (أول 100 عضو كمرحلة أولى)
-    participants = await client(GetParticipantsRequest(
-        group_entity, ChannelParticipantsSearch(''), offset=0, limit=1000, hash=0
-    ))
-    
-    print(f"🚀 تم العثور على {len(participants.users)} عضو. بدء النقل والمضاعفة تدريجياً...")
-    added_count = 0
-    
-    for user in participants.users:
-        if user.bot or user.deleted:
-            continue
-            
-        user_display = f"@{user.username}" if user.username else f"ID: {user.id}"
-        print(f"👤 محاولة نقل العضو: {user_display}")
-        
+    processed_users = load_processed_users()
+    print(f"📦 تم تحميل {len(processed_users)} عضو سابقين لتفادي التكرار.")
+
+    # 🔢 العداد العام للإضافات الناجحة عبر كل الدورات
+    total_success_added = 0
+
+    while total_success_added < TARGET_SUCCESS_COUNT:
         try:
-            user_to_add = await client.get_input_entity(user.id)
+            target_group_entity = await client.get_entity(target_group_username)
+            my_group_entity = await client.get_entity(my_group_username)
+
+            print(f"📬 [دورة جديدة] الإجمالي الحالي المضاف بنجاح: ({total_success_added}/{TARGET_SUCCESS_COUNT})")
+            print(f"📡 جاري سحب دفعة عشوائية جديدة من ({target_group_username})...")
             
-            # 🌟 تجربة الطريقة الأولى: Supergroup
-            try:
-                await client(InviteToChannelRequest(my_group_entity, [user_to_add]))
-                added_count += 1
-                print(f"👍 [نجاح] تمت إضافة {user_display}! إجمالي المضافين: {added_count}")
-                time.sleep(45) # وقت أمان لمنع الحظر
+            random_offset = random.randint(0, 2000)
+            
+            participants = await client(GetParticipantsRequest(
+                target_group_entity, ChannelParticipantsSearch(''), offset=random_offset, limit=150, hash=0
+            ))
+            
+            users = participants.users
+            
+            if not users:
+                print("⚠️ لم يتم العثور على أعضاء في هذه الإزاحة، استراحة دقيقة...")
+                await asyncio.sleep(60)
                 continue
-            except Exception as e1:
-                # إذا فشلت الأولى نجرب الطريقة الثانية للمجموعات العادية
-                try:
-                    await client(AddChatUserRequest(chat_id=my_group_entity.id, user_id=user_to_add, fwd_limit=0))
-                    added_count += 1
-                    print(f"👍 [نجاح بالطريقة 2] تمت إضافة {user_display}! إجمالي المضافين: {added_count}")
-                    time.sleep(45)
+
+            random.shuffle(users)
+            print(f"🚀 تم جلب {len(users)} عضو. جاري التصفية والنقل...")
+
+            for user in users:
+                # التحقق أولاً: هل وصلنا للهدف أثناء الدورة الحالية؟
+                if total_success_added >= TARGET_SUCCESS_COUNT:
+                    break
+
+                if user.bot or user.deleted:
                     continue
-                except Exception as e2:
-                    # إذا فشلت الطريقتان معاً ننتقل للعضو التالي
-                    print(f"⚠️ تخطي {user_display} بسبب قيود تليجرام.")
+                
+                if str(user.id) in processed_users:
+                    continue
                     
-        except PeerFloodError:
-            print("❌ حظر مؤقت (Flood) من تليجرام، نوم عميق لحماية رقمك لمدة ساعتين...")
-            time.sleep(7200)
-        except UserPrivacyRestrictedError:
-            print(f"⚠️ تخطي: {user_display} يغلق إعدادات الخصوصية.")
+                user_display = f"@{user.username}" if user.username else f"ID: {user.id}"
+                
+                try:
+                    # محاولة الإضافة
+                    await client(InviteToChannelRequest(my_group_entity, [user]))
+                    total_success_added += 1
+                    print(f"👍 [نجاح] تمت إضافة {user_display}! الإجمالي العام الحالي: {total_success_added}/{TARGET_SUCCESS_COUNT}")
+                    
+                    processed_users.add(str(user.id))
+                    save_processed_user(user.id)
+                    
+                    # وقت الأمان الثابت بين الإضافات الناجحة
+                    await asyncio.sleep(45)
+
+                except Exception as e:
+                    error_msg = str(e)
+                    
+                    # تسجيله كمفحوص حتى لو فشل لمنع تكراره
+                    processed_users.add(str(user.id))
+                    save_processed_user(user.id)
+
+                    if "PEER_FLOOD" in error_msg:
+                        print("⚠️ حظر مؤقت (Peer Flood) من تليجرام. السكربت سينام ساعتين لحماية الرقم...")
+                        await asyncio.sleep(7200)
+                    elif "USER_PRIVACY_RESTRICTED" in error_msg:
+                        print(f"🔒 تخطي ذكي لـ {user_display} (حساب مقيد بالخصوصية).")
+                        await asyncio.sleep(1)
+                    elif "USER_ALREADY_PARTICIPANT" in error_msg:
+                        print(f"⏭️ تخطي {user_display} (موجود بالفعل).")
+                        await asyncio.sleep(1)
+                    else:
+                        print(f"❌ فشلت إضافة {user_display}. السبب: {error_msg}")
+                        await asyncio.sleep(3)
+
+            # إذا وصلنا للهدف تماماً نخرج من الحلقة الكبيرة
+            if total_success_added >= TARGET_SUCCESS_COUNT:
+                break
+
+            print(f"🏁 انتهت الدورة الحالية بنجاح. المحصلة الحالية: {total_success_added} عضو ناجح. استراحة 10 دقائق...")
+            await asyncio.sleep(600)
+
         except Exception as e:
-            print(f"⚠️ تخطي {user_display} لسبب آخر: {e}")
-            continue
+            print(f"🚨 خطأ في السكربت: {e}. إعادة المحاولة بعد دقيقة...")
+            await asyncio.sleep(60)
 
-threading.Thread(target=run_telegram_bot, daemon=True).start()
+    print(f"🎉 مبارك! تم الوصول إلى الهدف النهائي بنجاح وتم نقل {TARGET_SUCCESS_COUNT} عضو إلى مجموعتك دون تكرار. السكربت سيتوقف الآن بسلام.")
 
-if __name__ == '__main__':
-    port = int(os.environ.get("PORT", 5000))
+def run_bot_loop():
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    loop.run_until_complete(main_bot())
+
+import threading
+threading.Thread(target=run_bot_loop, daemon=True).start()
+
+if __name__ == "__main__":
+    port = int(os.environ.get("PORT", 10000))
     app.run(host='0.0.0.0', port=port)
