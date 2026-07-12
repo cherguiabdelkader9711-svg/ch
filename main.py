@@ -2,23 +2,20 @@ import os
 import sys
 import time
 import json
-import random
+import csv
 import asyncio
 import threading
-from datetime import datetime, timedelta
 from flask import Flask, request, render_template_string
 from telethon import TelegramClient
-from telethon.tl.functions.channels import InviteToChannelRequest, GetParticipantsRequest, JoinChannelRequest
-from telethon.tl.types import ChannelParticipantsSearch, UserStatusRecently, UserStatusOffline
+from telethon.tl.functions.channels import InviteToChannelRequest, JoinChannelRequest
+from telethon.tl.types import InputPeerUser
 
 sys.stdout.reconfigure(line_buffering=True)
 
 app = Flask(__name__)
 
-# تخزين مؤقت لحالات تسجيل الدخول النشطة
 auth_states = {}
 
-# واجهة تحكم بسيطة لبيئة الويب لتمكينك من إدخال كود تليجرام عند الحاجة من المتصفح
 HTML_TEMPLATE = """
 <!DOCTYPE html>
 <html>
@@ -37,20 +34,14 @@ HTML_TEMPLATE = """
     <div class="card">
         <h2>🔐 تفعيل جلسات تليجرام السحابية</h2>
         <p>الحسابات المكتشفة: <strong>{{ phone }}</strong></p>
-        
         <form action="/verify" method="post">
             <input type="hidden" name="phone" value="{{ phone }}">
-            <label>1. إذا لم يصلك الكود بعد، اضغط لطلبه:</label>
             <button type="submit" name="action" value="send_code" style="background:#5cb85c; margin-bottom:20px;">طلب كود التحقق (SMS/Telegram)</button>
-            
-            <label>2. أدخل كود التحقق المستلم:</label>
+            <br>
             <input type="text" name="code" placeholder="أدخل الكود هنا...">
             <button type="submit" name="action" value="login">تأكيد تسجيل الدخول وتفعيل الجلسة</button>
         </form>
-        
-        {% if msg %}
-        <div class="status">{{ msg }}</div>
-        {% endif %}
+        {% if msg %}<div class="status">{{ msg }}</div>{% endif %}
     </div>
 </body>
 </html>
@@ -60,10 +51,9 @@ HTML_TEMPLATE = """
 def home():
     with open('config.json', 'r', encoding='utf-8') as f:
         cfg = json.loads(f.read())
-    primary_phone = cfg['accounts'][0]
-    return render_template_string(HTML_TEMPLATE, phone=primary_phone, msg=request.args.get('msg', ''))
+    return render_template_string(HTML_TEMPLATE, phone=cfg['accounts'][0], msg=request.args.get('msg', ''))
 
-@app.route('/verify', method=['POST'])
+@app.route('/verify', methods=['POST'])
 def verify():
     phone = request.form.get('phone')
     action = request.form.get('action')
@@ -71,26 +61,24 @@ def verify():
     
     if action == 'send_code':
         asyncio.run_coroutine_threadsafe(trigger_send_code(phone), bot_loop)
-        return render_template_string(HTML_TEMPLATE, phone=phone, msg="⏳ جاري إرسال الكود... تفقد تطبيق تليجرام الخاص بك.")
-        
+        return render_template_string(HTML_TEMPLATE, phone=phone, msg="⏳ جاري إرسال الكود... تفقد تطبيق تليجرام.")
     elif action == 'login':
         if phone in auth_states:
             auth_states[phone]['code_to_submit'] = code
-            return render_template_string(HTML_TEMPLATE, phone=phone, msg="⚙️ جاري معالجة الكود وتوثيق الجلسة، تفقد اللوج في Render للتحقق من الاتصال الحقيقي!")
-            
+            return render_template_string(HTML_TEMPLATE, phone=phone, msg="⚙️ جاري التوثيق وتنشيط الجلسة...")
     return render_template_string(HTML_TEMPLATE, phone=phone, msg="")
 
-# --- إعداد المتغيرات الثابتة ---
+# قراءة الإعدادات الثابتة
 with open('config.json', 'r', encoding='utf-8') as f:
     config = json.loads(f.read())
 
 api_id = int(config['api_id'])
 api_hash = config['api_hash']
-group_source = config['group_source']
 group_target = config['group_target']
 accounts = config['accounts']
+
 PROCESSED_USERS_FILE = "processed_users.txt"
-TARGET_SUCCESS_COUNT = 1000
+CSV_FILE = "members.csv"
 
 bot_loop = asyncio.new_event_loop()
 
@@ -103,6 +91,34 @@ def load_processed_users():
 def save_processed_user(user_id):
     with open(PROCESSED_USERS_FILE, "a") as f:
         f.write(f"{user_id}\n")
+
+# الدالة الاحترافية لقراءة ومعالجة ملف الـ CSV
+def load_target_members_from_csv():
+    members_list = []
+    if os.path.exists(CSV_FILE):
+        with open(CSV_FILE, mode='r', encoding='utf-8-sig') as f:
+            # استخدام Sniffer للتعرف التلقائي على الفواصل (سواء كانت فاصلة منقوطة أو عادية)
+            try:
+                dialect = csv.Sniffer().sniff(f.read(2048))
+                f.seek(0)
+                reader = csv.DictReader(f, dialect=dialect)
+            except Exception:
+                f.seek(0)
+                reader = csv.DictReader(f)
+                
+            for row in reader:
+                # محاولة جلب المفاتيح الأساسية مع معالجة المسافات الزائدة في الحقول
+                user_id = row.get('user_id') or row.get('id') or row.get('username')
+                access_hash = row.get('access_hash') or row.get('hash') or '0'
+                username = row.get('username') or ''
+                
+                if user_id:
+                    members_list.append({
+                        'user_id': user_id.strip(),
+                        'access_hash': access_hash.strip(),
+                        'username': username.strip()
+                    })
+    return members_list
 
 async def trigger_send_code(phone):
     if phone in auth_states:
@@ -129,18 +145,17 @@ async def core_adder_process():
         
         auth_states[phone] = {'client': cli, 'phone_code_hash': None, 'code_to_submit': None}
         
-        # حلقة انتظار ذكية تسمح لك بتسجيل الدخول من المتصفح دون انهيار السكربت
         while not await cli.is_user_authorized():
-            print(f"⚠️ الحساب {phone} غير مفعل سحابياً. يرجى فتح رابط خدمة Render الخاص بك لإدخال الكود.")
+            print(f"⚠️ الحساب {phone} يحتاج تفعيل. افتح واجهة الويب لإدخال كود التحقق.")
             if auth_states[phone]['code_to_submit']:
                 try:
                     current_code = auth_states[phone]['code_to_submit']
                     current_hash = auth_states[phone]['phone_code_hash']
                     await cli.sign_in(phone, code=current_code, phone_code_hash=current_hash)
-                    print(f"✨ تم توثيق وتسجيل الدخول بنجاح للرقم {phone}!")
+                    print(f"✨ تم تسجيل الدخول بنجاح للرقم {phone}!")
                     break
                 except Exception as auth_err:
-                    print(f"❌ خطأ أثناء إدخال الكود: {auth_err}")
+                    print(f"❌ خطأ التوثيق: {auth_err}")
                     auth_states[phone]['code_to_submit'] = None
             await asyncio.sleep(10)
             
@@ -149,94 +164,59 @@ async def core_adder_process():
         except Exception:
             pass
         clients.append({'phone': phone, 'client': cli})
-        print(f"✅ الحساب {phone} جاهز تماماً وفي الخدمة النشطة!")
+        print(f"✅ الحساب {phone} جاهز تماماً للعمل.")
 
     processed_users = load_processed_users()
-    total_success_added = 0
-    attempt_counter = 0
-    limit_date = datetime.now() - timedelta(days=7)
+    users_to_add = load_target_members_from_csv()
+    print(f"📦 تم تحميل {len(users_to_add)} عضو بنجاح من ملف الـ CSV المتطور.")
 
-    while total_success_added < TARGET_SUCCESS_COUNT:
+    attempt_counter = 0
+
+    for user in users_to_add:
         if len(clients) == 0:
-            print("🚨 [توقف فوري]: تم عزل كافة الحسابات النشطة.")
+            print("🚨 [توقف]: جميع الحسابات المربوطة تم حظرها مؤقتاً.")
             break
 
+        user_id = user['user_id']
+        access_hash = user['access_hash']
+        username = user['username']
+
+        if str(user_id) in processed_users:
+            continue
+
+        current_index = attempt_counter % len(clients)
+        active_worker = clients[current_index]
+        cli_worker = active_worker['client']
+        phone_worker = active_worker['phone']
+
+        user_display = f"@{username}" if username else f"ID: {user_id}"
+        print(f"👤 [الحساب: {phone_worker}] نقل العضو من ملف CSV: {user_display}")
+
         try:
-            scrapper_account = clients[0]['client']
-            group_entity = await scrapper_account.get_entity(group_source)
-            random_offset = random.randint(0, 1500)
+            my_group_entity = await cli_worker.get_entity(group_target)
             
-            participants = await scrapper_account(GetParticipantsRequest(
-                group_entity, ChannelParticipantsSearch(''), offset=random_offset, limit=100, hash=0
-            ))
+            # التحقق مما إذا كان المعرف رقمي أو مجرد نص يوزر نيم
+            if user_id.isdigit() and access_hash.isdigit() and access_hash != '0':
+                user_peer = InputPeerUser(int(user_id), int(access_hash))
+            else:
+                user_peer = await cli_worker.get_input_entity(username if username else user_id)
             
-            users = participants.users
-            if not users:
-                await asyncio.sleep(60)
-                continue
-
-            random.shuffle(users)
-
-            for user in users:
-                if total_success_added >= TARGET_SUCCESS_COUNT or len(clients) == 0:
-                    break
-                if user.bot or user.deleted or str(user.id) in processed_users:
-                    continue
-
-                is_active = False
-                if isinstance(user.status, UserStatusRecently):
-                    is_active = True
-                elif isinstance(user.status, UserStatusOffline):
-                    if user.status.was_online.replace(tzinfo=None) > limit_date:
-                        is_active = True
-
-                if not is_active:
-                    continue
-
-                current_index = attempt_counter % len(clients)
-                active_worker = clients[current_index]
-                cli_worker = active_worker['client']
-                phone_worker = active_worker['phone']
-
-                user_display = f"@{user.username}" if user.username else f"ID: {user.id}"
-                print(f"👤 [الحساب: {phone_worker}] محاولة نقل العضو: {user_display}")
-
-                try:
-                    my_group_entity = await cli_worker.get_entity(group_target)
-                    user_to_add = await cli_worker.get_input_entity(user.id)
-                    
-                    await cli_worker(InviteToChannelRequest(my_group_entity, [user_to_add]))
-                    
-                    total_success_added += 1
-                    print(f"👍 [نجاح] أضاف {phone_worker} العضو {user_display}! المحصلة: {total_success_added}/{TARGET_SUCCESS_COUNT}")
-                    
-                    processed_users.add(str(user.id))
-                    save_processed_user(user.id)
-                    attempt_counter += 1
-                    await asyncio.sleep(20)
-
-                except Exception as e:
-                    error_msg = str(e)
-                    if "PEER_FLOOD" in error_msg:
-                        print(f"❌ [حظر مؤقت] عزل الحساب {phone_worker}...")
-                        try: await cli_worker.disconnect()
-                        except Exception: pass
-                        clients.remove(active_worker)
-                    else:
-                        processed_users.add(str(user.id))
-                        save_processed_user(user.id)
-                        attempt_counter += 1
-                    continue
-
-            print("睡 استراحة 5 دقائق لتبريد كافة الحسابات...")
-            await asyncio.sleep(300)
+            await cli_worker(InviteToChannelRequest(my_group_entity, [user_peer]))
+            print(f"👍 [نجاح] أضاف {phone_worker} العضو {user_display}!")
+            
+            processed_users.add(str(user_id))
+            save_processed_user(user_id)
+            attempt_counter += 1
+            
+            # استراحة لمنع الحظر
+            await asyncio.sleep(25)
 
         except Exception as e:
-            print(f"🚨 خطأ في الـ Loop: {e}")
-            await asyncio.sleep(60)
-
-threading.Thread(target=run_telegram_bot, daemon=True).start()
-
-if __name__ == '__main__':
-    port = int(os.environ.get("PORT", 5000))
-    app.run(host='0.0.0.0', port=port)
+            error_msg = str(e)
+            if "PEER_FLOOD" in error_msg:
+                print(f"❌ [حظر مؤقت] عزل الحساب {phone_worker} بسبب ضغط السيرفر...")
+                try:
+                    await cli_worker.disconnect()
+                except Exception:
+                    pass
+                clients
