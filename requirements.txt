@@ -2,3 +2,6 @@ telethon
 flask
 gunicorn
 cryptography
+.idea
+__pycache__
+config.json
