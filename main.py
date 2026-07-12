@@ -5,6 +5,7 @@ import json
 import csv
 import asyncio
 import threading
+import re
 from flask import Flask
 from telethon import TelegramClient
 from telethon.tl.functions.channels import InviteToChannelRequest, JoinChannelRequest
@@ -15,7 +16,7 @@ app = Flask(__name__)
 
 @app.route('/')
 def home():
-    return "<h1>CSV Adder Engine is Active and Running!</h1>"
+    return "<h1>CSV Adder Engine is Active with Smart Flood Protection!</h1>"
 
 # تحميل الإعدادات
 with open('config.json', 'r', encoding='utf-8') as f:
@@ -39,28 +40,22 @@ def save_processed_user(user_id):
     with open(PROCESSED_USERS_FILE, "a") as f:
         f.write(f"{user_id}\n")
 
-# دالة مخصصة لملفك الحالي لقراءة الـ ID والـ Username بدقة
 def load_target_members_from_csv():
     members_list = []
     if not os.path.exists(CSV_FILE):
-        print(f"❌ ملف {CSV_FILE} غير موجود في المجلد الرئيسي!")
+        print(f"❌ ملف {CSV_FILE} غير موجود!")
         return members_list
 
     with open(CSV_FILE, mode='r', encoding='utf-8-sig') as f:
-        # قراءة الملف كـ DictReader بناءً على الهيدر الحالي (ID, Username)
         reader = csv.DictReader(f)
-        
         for row in reader:
-            # جلب البيانات مع تنظيف الفراغات
             u_id = row.get('ID') or row.get('id')
             u_name = row.get('Username') or row.get('username') or ''
-            
             if u_id:
                 members_list.append({
                     'user_id': u_id.strip(),
                     'username': u_name.strip()
                 })
-                
     return members_list
 
 def run_telegram_bot():
@@ -72,16 +67,15 @@ def run_telegram_bot():
         print(f"❌ [CRITICAL ERROR]: {e}")
 
 async def core_adder_process():
-    print(f"⏳ [SYSTEM] جاري محاولة فتح الجلسة السحابية المرفوعة {SESSION_FILE}...")
-    
+    print(f"⏳ [SYSTEM] جاري فتح الجلسة السحابية {SESSION_FILE}...")
     client = TelegramClient(SESSION_FILE, api_id, api_hash, receive_updates=False)
     await client.connect()
     
     if not await client.is_user_authorized():
-        print("❌ [Fatal Error] ملف الجلسة render_session_v1 غير فعال أو انتهت صلاحيته.")
+        print("❌ [Fatal Error] ملف الجلسة غير فعال.")
         return
 
-    print("✅ تم الاتصال بنجاح وتوثيق الحساب السحابي المرفوع!")
+    print("✅ تم الاتصال بنجاح وتوثيق الحساب!")
     
     try:
         await client(JoinChannelRequest(group_target))
@@ -90,11 +84,7 @@ async def core_adder_process():
 
     processed_users = load_processed_users()
     users_to_add = load_target_members_from_csv()
-    print(f"📦 تم قراءة ملف الـ CSV بنجاح: العثور على ({len(users_to_add)}) عضو جاهز للإضافة.")
-
-    if not users_to_add:
-        print("⚠️ لا توجد داتا صالحة للإضافة بداخل الملف. يتوقف النظام.")
-        return
+    print(f"📦 تم قراءة ملف الـ CSV: العثور على ({len(users_to_add)}) عضو.")
 
     for user in users_to_add:
         user_id = user['user_id']
@@ -103,14 +93,12 @@ async def core_adder_process():
         if str(user_id) in processed_users:
             continue
 
-        # تحديد طريقة الاستدعاء: نفضل اليوزر نيم لضمان تخطي حماية الـ Access Hash
         user_display = f"@{username}" if username else f"ID: {user_id}"
         print(f"👤 جاري محاولة نقل العضو: {user_display}")
 
         try:
             my_group_entity = await client.get_entity(group_target)
             
-            # جلب الكيان البرمجي للعضو بناءً على اليوزر نيم أولاً أو الآيدي
             if username:
                 user_peer = await client.get_input_entity(username)
             else:
@@ -122,17 +110,27 @@ async def core_adder_process():
             processed_users.add(str(user_id))
             save_processed_user(user_id)
             
-            # استراحة أمان 35 ثانية لحماية حسابك وجروبك من الحظر السريع
+            # استراحة أمان ثابتة بين كل عضو وعضو
             await asyncio.sleep(35)
 
         except Exception as e:
             error_msg = str(e)
-            print(f"⚠️ تعذر نقل العضو بسبب: {error_msg}")
             
-            if "PEER_FLOOD" in error_msg:
-                print("🚨 الحساب تلقى حظراً مؤقتاً (Flood). يتوقف السكربت تلقائياً لحماية الحساب.")
-                break
+            # 🚨 كاشف الحظر الذكي واستخراج الثواني ديناميكياً
+            if "wait" in error_msg.lower() or "flood" in error_msg.lower():
+                # محاولة استخراج عدد الثواني المطلوب الانتظار فيها باستخدام Regex
+                seconds_match = re.search(r'\d+', error_msg)
+                wait_seconds = int(seconds_match.group()) if seconds_match else 3600
                 
+                print(f"🚨 [FLOOD DETECTED] تليجرام يطلب الانتظار لمدة {wait_seconds} ثانية.")
+                print("💤 سيقوم السكربت بالنوم الآن لحماية حسابك ولن يتم تخطي أو حرق القائمة...")
+                
+                # إيقاف السكربت مؤقتاً طوال مدة الحظر دون الانتقال للعضو القادم
+                await asyncio.sleep(wait_seconds + 10)
+                print("🔄 انتهت مدة الحظر! جاري إعادة محاولة نقل العضو الحالي...")
+                continue # إعادة المحاولة لنفس العضو دون خسارته
+                
+            print(f"⚠️ تعذر نقل العضو بسبب خطأ عادي: {error_msg}")
             processed_users.add(str(user_id))
             save_processed_user(user_id)
             await asyncio.sleep(5)
@@ -140,7 +138,6 @@ async def core_adder_process():
 
     print("🎉 تم الانتهاء من العمل على الملف بالكامل.")
 
-# تشغيل البوت في الخلفية ليبقى سيرفر Flask مستقراً
 threading.Thread(target=run_telegram_bot, daemon=True).start()
 
 if __name__ == '__main__':
