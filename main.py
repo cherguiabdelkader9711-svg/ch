@@ -53,7 +53,7 @@ async def mass_scaler_process():
 
     # جلب الأعضاء (أول 100 عضو كمرحلة أولى)
     participants = await client(GetParticipantsRequest(
-        group_entity, ChannelParticipantsSearch(''), offset=0, limit=100, hash=0
+        group_entity, ChannelParticipantsSearch(''), offset=0, limit=30, hash=0
     ))
     
     print(f"🚀 تم العثور على {len(participants.users)} عضو. بدء النقل والمضاعفة تدريجياً...")
@@ -74,7 +74,7 @@ async def mass_scaler_process():
                 await client(InviteToChannelRequest(my_group_entity, [user_to_add]))
                 added_count += 1
                 print(f"👍 [نجاح] تمت إضافة {user_display}! إجمالي المضافين: {added_count}")
-                time.sleep(45) # وقت أمان لمنع الحظر
+                time.sleep(5) # وقت أمان لمنع الحظر
                 continue
             except Exception as e1:
                 # إذا فشلت الأولى نجرب الطريقة الثانية للمجموعات العادية
@@ -82,7 +82,7 @@ async def mass_scaler_process():
                     await client(AddChatUserRequest(chat_id=my_group_entity.id, user_id=user_to_add, fwd_limit=0))
                     added_count += 1
                     print(f"👍 [نجاح بالطريقة 2] تمت إضافة {user_display}! إجمالي المضافين: {added_count}")
-                    time.sleep(45)
+                    time.sleep(5)
                     continue
                 except Exception as e2:
                     # إذا فشلت الطريقتان معاً ننتقل للعضو التالي
