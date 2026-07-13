@@ -28,7 +28,6 @@ api_hash = config['api_hash']
 group_target = config['group_target']
 
 PROCESSED_USERS_FILE = "processed_users.txt"
-CSV_FILE = "members.csv"
 SESSION_FILE = "render_session_v1"
 
 def load_processed_users():
@@ -41,23 +40,71 @@ def save_processed_user(user_id):
     with open(PROCESSED_USERS_FILE, "a") as f:
         f.write(f"{user_id}\n")
 
-# دالة ذكية مرنة متوافقة تماماً مع بنية ملف الأعضاء المجموع
+# دالة ذكية للبحث عن ملف الأعضاء وقراءته مهما كان اسمه (members أو membre)
 def load_target_members_from_csv():
     members_list = []
-    if not os.path.exists(CSV_FILE):
-        print(f"❌ ملف الأعضاء {CSV_FILE} غير موجود في المجلد الحالي!")
+    target_file = None
+    
+    # البحث التلقائي عن أي ملف يحتوي على كلمة memb في المجلد الحالي
+    for file in os.listdir('.'):
+        if 'memb' in file.lower():
+            target_file = file
+            break
+            
+    if not target_file:
+        print("❌ لم يتم العثور على أي ملف أعضاء (members.csv أو membre) في المجلد الرئيسي!")
         return members_list
 
-    with open(CSV_FILE, mode='r', encoding='utf-8-sig') as f:
-        reader = csv.DictReader(f)
-        for row in reader:
-            u_id = row.get('ID') or row.get('id')
-            u_name = row.get('Username') or row.get('username') or ''
+    print(f"📂 [SYSTEM] تم العثور على ملف الأعضاء وتحديده تلقائياً: {target_file}")
+
+    with open(target_file, mode='r', encoding='utf-8-sig') as f:
+        # قراءة السطور وتنظيفها
+        content = f.read()
+        f.seek(0)
+        
+        # التعرف التلقائي على الفاصلة (, أو ;)
+        try:
+            dialect = csv.Sniffer().sniff(content[:2048])
+            reader = csv.reader(f, dialect)
+        except Exception:
+            f.seek(0)
+            reader = csv.reader(f)
+            
+        rows = list(reader)
+        if not rows:
+            print("❌ الملف المكتشف فارغ تماماً!")
+            return members_list
+            
+        # استخراج الهيدر وتحويل العناوين إلى أحرف صغيرة لتسهيل المطابقة
+        headers = [h.strip().lower() for h in rows[0]]
+        
+        id_index = -1
+        user_index = -1
+        
+        for i, h in enumerate(headers):
+            if 'id' in h:
+                id_index = i
+            elif 'username' in h or 'user' in h or 'name' in h:
+                user_index = i
+
+        # في حال غياب الهيدر الصريح، نعتمد الترتيب الافتراضي (العمود الأول ID، العمود الثاني Username)
+        if id_index == -1: id_index = 0
+        if user_index == -1 and len(headers) > 1: user_index = 1
+
+        # قراءة البيانات بدءاً من السطر الثاني
+        for row in rows[1:]:
+            if not row or len(row) <= max(id_index, user_index):
+                continue
+                
+            u_id = row[id_index].strip()
+            u_name = row[user_index].strip() if user_index != -1 else ''
+            
             if u_id:
                 members_list.append({
-                    'user_id': u_id.strip(),
-                    'username': u_name.strip()
+                    'user_id': u_id,
+                    'username': u_name
                 })
+                
     return members_list
 
 def run_telegram_bot():
@@ -79,7 +126,6 @@ async def core_adder_process():
 
     print("✅ تم ربط محرك الإضافة بالجلسة بنجاح!")
     
-    # محاولة الانضمام للجروب المستهدف تلقائياً بالحساب إن لم يكن منضماً
     try:
         await client(JoinChannelRequest(group_target))
     except Exception:
@@ -87,13 +133,12 @@ async def core_adder_process():
 
     processed_users = load_processed_users()
     users_to_add = load_target_members_from_csv()
-    print(f"📦 تم تحميل ({len(users_to_add)}) عضو جاهز للمعالجة من ملف CSV.")
+    print(f"📦 تم تحميل ({len(users_to_add)}) عضو جاهز للمعالجة من الملف.")
 
     for user in users_to_add:
         user_id = user['user_id']
         username = user['username']
 
-        # تخطي الأعضاء الذين تمت محاولتهم مسبقاً لحفظ الوقت والجهد
         if str(user_id) in processed_users:
             continue
 
@@ -103,28 +148,25 @@ async def core_adder_process():
         try:
             my_group_entity = await client.get_entity(group_target)
             
-            # محاولة جلب الكيان البرمجي بناءً على ما تم مواجهته في الجلسة أو اليوزر
             if username:
                 user_peer = await client.get_input_entity(username)
             else:
                 user_peer = await client.get_input_entity(int(user_id))
             
-            # تنفيذ طلب الإضافة الفعلي للجروب الخاص بك
             await client(InviteToChannelRequest(my_group_entity, [user_peer]))
             print(f"👍 [نجاح تام] تم نقل {user_display} إلى المجموعة بنجاح!")
             
             processed_users.add(str(user_id))
             save_processed_user(user_id)
             
-            # استراحة أمان ذكية وثابتة لمنع الحظر السريع للجروب والحساب
+            # استراحة أمان ذكية وثابتة لحماية الجروب والحساب
             await asyncio.sleep(40)
 
         except FloodWaitError as e:
-            # معالجة حظر تليجرام المؤقت وإيقاف السكربت مؤقتاً لحماية الحساب
             print(f"🚨 [تنبيه Flood] تليجرام يطلب التوقف المؤقت لمدة {e.seconds} ثانية.")
-            print("💤 السكربت يدخل في سبات آمن الآن ولن يفقد العضو الحالي أو يحرق القائمة...")
+            print("💤 السكربت يدخل في سبات آمن الآن ولن يفقد العضو الحالي...")
             await asyncio.sleep(e.seconds + 15)
-            print("🔄 انتهت مدة الحظر المؤقت! جاري استئناف العمل على العضو الحالي...")
+            print("🔄 انتهت مدة الحظر المؤقت! جاري استئناف العمل...")
             continue
 
         except UserPrivacyRestrictedError:
@@ -141,7 +183,6 @@ async def core_adder_process():
 
         except Exception as e:
             error_msg = str(e)
-            # احتياط إضافي إذا ظهر خطأ الـ Wait بصيغة نصية أخرى
             if "wait" in error_msg.lower():
                 seconds_match = re.search(r'\d+', error_msg)
                 wait_seconds = int(seconds_match.group()) if seconds_match else 3600
@@ -149,14 +190,13 @@ async def core_adder_process():
                 await asyncio.sleep(wait_seconds + 10)
                 continue
                 
-            print(f"❌ تعذر نقل {user_display} بسبب خطأ غير معروف: {error_msg}")
+            print(f"❌ تعذر نقل {user_display} بسبب خطأ: {error_msg}")
             processed_users.add(str(user_id))
             save_processed_user(user_id)
             await asyncio.sleep(5)
 
     print("🎉 تم إنهاء العمل على كامل الملف المرفوع بنجاح وتصفية الداتا.")
 
-# تشغيل البوت التليجرامي في الخلفية لضمان عمل خادم ويب Flask
 threading.Thread(target=run_telegram_bot, daemon=True).start()
 
 if __name__ == '__main__':
